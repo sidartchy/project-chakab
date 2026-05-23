@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     github_token: str = ""
 
     # Database
-    database_url: str = ""
+    database_url: str = "postgresql+asyncpg://agent:agent@localhost:5432/agent"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -28,8 +28,22 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
 
-    # LLM
-    llm_api_key: str = ""
+    # LLM — provider selection: "anthropic" | "openai" | "gemini"
+    llm_provider: str = "anthropic"
+
+    # API keys (only the one matching llm_provider is required)
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    gemini_api_key: str = ""
+
+    # Model overrides (sensible defaults per provider)
+    anthropic_model: str = "claude-sonnet-4-20250514"
+    openai_model: str = "gpt-4o"
+    gemini_model: str = "gemini-2.0-flash"
+
+    # Shared LLM tunables
+    llm_max_tokens: int = 4096
+    llm_temperature: float = 0.0  # deterministic for planning / analysis
 
     @property
     def is_development(self) -> bool:

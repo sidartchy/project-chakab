@@ -37,14 +37,15 @@ def process_issue(
     issue_body: str,
 ) -> dict:
     """
-    Main agent task. Orchestrates the full pipeline:
-      Phase 2: intake & planning
-      Phase 3: sandbox execution
-      Phase 4: self-healing loop
-      Phase 6: delivery
+    Main agent task. Orchestrates the full pipeline.
 
-    Currently a stub — logs receipt and returns pending status.
+    Phase 2: intake & planning  ← implemented
+    Phase 3: sandbox execution  ← coming
+    Phase 4: self-healing loop  ← coming
+    Phase 6: delivery           ← coming
     """
+    import asyncio
+
     logger.info(
         "process_issue.received",
         run_id=run_id,
@@ -52,13 +53,39 @@ def process_issue(
         issue=issue_number,
     )
 
-    # TODO Phase 2: call intake service (issue parser, risk classifier, planner)
+    # ── Phase 2: Intake ───────────────────────────────────────────────────────
+    from app.services.intake import IntakeService
+
+    intake = IntakeService()
+    context = asyncio.get_event_loop().run_until_complete(
+        intake.run(
+            run_id=run_id,
+            repo_full_name=repo_full_name,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            issue_body=issue_body,
+        )
+    )
+
+    if context is None:
+        # Aborted at intake (high risk, low confidence, etc.)
+        return {"run_id": run_id, "status": "aborted"}
+
+    logger.info(
+        "process_issue.intake_complete",
+        run_id=run_id,
+        intent=context.intent,
+        risk=context.risk_level,
+        plan_steps=len(context.plan_steps),
+    )
+
     # TODO Phase 3: spawn sandbox, apply patch, run CI
     # TODO Phase 4: self-healing loop
     # TODO Phase 6: push branch, open PR
 
     return {
         "run_id": run_id,
-        "status": "pending",
-        "message": "Task received — full pipeline not yet implemented",
+        "status": "executing",
+        "intent": context.intent,
+        "plan_steps": len(context.plan_steps),
     }
