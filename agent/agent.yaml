@@ -1,0 +1,21 @@
+# agent.yaml — place this at the root of your repository
+# to configure how the autonomous agent runs your CI pipeline.
+#
+# All fields are optional. If omitted, the agent auto-detects commands.
+
+# Commands the agent will run inside the sandbox (in order: lint → test → build)
+lint: "ruff check . && mypy app"
+test: "pytest -x -q"
+build: "python -m py_compile $(find app -name '*.py')"
+
+# Optional: restrict which paths the agent is allowed to modify.
+# Glob patterns. If omitted, the scope rules in the agent's risk classifier apply.
+# allowed_paths:
+#   - "app/**"
+#   - "tests/**"
+
+# Optional: override default timeouts (seconds)
+# timeouts:
+#   lint: 120
+#   test: 480
+#   build: 300

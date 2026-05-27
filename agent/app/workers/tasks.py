@@ -1,3 +1,5 @@
+import asyncio
+
 from celery import Task
 from celery.utils.log import get_task_logger
 
@@ -5,13 +7,18 @@ from app.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
 
+# Retry budget for the self-healing loop (Phase 4)
+MAX_SANDBOX_RETRIES = 3
+
 
 class AgentTask(Task):
-    """Base task class with common error handling."""
+    """Base task class with shared error handling."""
 
     abstract = True
 
-    def on_failure(self, exc: Exception, task_id: str, args: tuple, kwargs: dict, einfo) -> None:  # type: ignore[override]
+    def on_failure(
+        self, exc: Exception, task_id: str, args: tuple, kwargs: dict, einfo
+    ) -> None:  # type: ignore[override]
         logger.error(
             "task_failed",
             task_id=task_id,
@@ -24,7 +31,7 @@ class AgentTask(Task):
     bind=True,
     base=AgentTask,
     name="agent.process_issue",
-    max_retries=3,
+    max_retries=0,          # we manage retries ourselves inside the task
     default_retry_delay=30,
 )
 def process_issue(
@@ -39,15 +46,36 @@ def process_issue(
     """
     Main agent task. Orchestrates the full pipeline.
 
-    Phase 2: intake & planning  ← implemented
-    Phase 3: sandbox execution  ← coming
-    Phase 4: self-healing loop  ← coming
-    Phase 6: delivery           ← coming
+    Phase 2: intake & planning   ✓ implemented
+    Phase 3: sandbox execution   ✓ implemented
+    Phase 4: self-healing loop     coming
+    Phase 6: delivery              coming
     """
-    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            _run_pipeline(
+                run_id=run_id,
+                repo_full_name=repo_full_name,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                issue_body=issue_body,
+            )
+        )
+    finally:
+        loop.close()
 
+
+async def _run_pipeline(
+    *,
+    run_id: str,
+    repo_full_name: str,
+    issue_number: int,
+    issue_title: str,
+    issue_body: str,
+) -> dict:
     logger.info(
-        "process_issue.received",
+        "pipeline.start",
         run_id=run_id,
         repo=repo_full_name,
         issue=issue_number,
@@ -56,36 +84,57 @@ def process_issue(
     # ── Phase 2: Intake ───────────────────────────────────────────────────────
     from app.services.intake import IntakeService
 
-    intake = IntakeService()
-    context = asyncio.get_event_loop().run_until_complete(
-        intake.run(
-            run_id=run_id,
-            repo_full_name=repo_full_name,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            issue_body=issue_body,
-        )
+    context = await IntakeService().run(
+        run_id=run_id,
+        repo_full_name=repo_full_name,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
     )
 
     if context is None:
-        # Aborted at intake (high risk, low confidence, etc.)
-        return {"run_id": run_id, "status": "aborted"}
+        logger.warning("pipeline.aborted_at_intake", run_id=run_id)
+        return {"run_id": run_id, "status": "aborted", "phase": "intake"}
 
     logger.info(
-        "process_issue.intake_complete",
+        "pipeline.intake_complete",
         run_id=run_id,
         intent=context.intent,
         risk=context.risk_level,
         plan_steps=len(context.plan_steps),
     )
 
-    # TODO Phase 3: spawn sandbox, apply patch, run CI
-    # TODO Phase 4: self-healing loop
-    # TODO Phase 6: push branch, open PR
+    # ── Phase 3: Sandbox execution ────────────────────────────────────────────
+    from app.services.sandbox import SandboxService
+
+    sandbox = SandboxService()
+    sandbox_result = await sandbox.run(
+        run_id=run_id,
+        issue_context=context,
+        retry_count=0,
+    )
+
+    if sandbox_result.passed:
+        logger.info("pipeline.sandbox_passed", run_id=run_id)
+        # TODO Phase 6: push branch, open PR
+        return {
+            "run_id": run_id,
+            "status": "validating",
+            "files_changed": len(sandbox_result.patch.files_changed) if sandbox_result.patch else 0,
+        }
+
+    # ── Phase 4: Self-healing loop ────────────────────────────────────────────
+    # TODO: implemented in Phase 4 — for now surface the failure
+    logger.warning(
+        "pipeline.sandbox_failed",
+        run_id=run_id,
+        reason=sandbox_result.failure_reason,
+        retry_count=sandbox_result.retry_count,
+    )
 
     return {
         "run_id": run_id,
-        "status": "executing",
-        "intent": context.intent,
-        "plan_steps": len(context.plan_steps),
+        "status": "failed",
+        "reason": sandbox_result.failure_reason,
+        "phase": "sandbox",
     }
